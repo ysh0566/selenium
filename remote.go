@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"mime"
 	"net/http"
@@ -22,28 +23,74 @@ import (
 	"github.com/tebeka/selenium/log"
 )
 
+var (
+	ErrInvalidSessionID          = errors.New("invalid session ID")
+	ErrNoSuchElement             = errors.New("no such element")
+	ErrNoSuchFrame               = errors.New("no such frame")
+	ErrUnknownCommand            = errors.New("unknown command")
+	ErrStaleElementReference     = errors.New("stale element reference")
+	ErrElementNotVisible         = errors.New("element not visible")
+	ErrInvalidElementState       = errors.New("invalid element state")
+	ErrUnknownError              = errors.New("unknown error")
+	ErrElementNotSelectable      = errors.New("element not selectable")
+	ErrJavascriptError           = errors.New("javascript error")
+	ErrXpathLookup               = errors.New("xpath lookup error")
+	ErrTimeout                   = errors.New("timeout")
+	ErrNoSuchWindow              = errors.New("no such window")
+	ErrInvalidCookieDomain       = errors.New("invalid cookie domain")
+	ErrUnableToSetCookie         = errors.New("unable to set cookie")
+	ErrUnexpectedAlertOpen       = errors.New("unexpected alert open")
+	ErrNoAlertPresent            = errors.New("no alert present")
+	ErrScriptTimeout             = errors.New("script timeout")
+	ErrInvalidElementCoordinates = errors.New("invalid element coordinates")
+	ErrInvalidSelector           = errors.New("invalid selector")
+)
+
 // Errors returned by Selenium server.
-var remoteErrors = map[int]string{
-	6:  "invalid session ID",
-	7:  "no such element",
-	8:  "no such frame",
-	9:  "unknown command",
-	10: "stale element reference",
-	11: "element not visible",
-	12: "invalid element state",
-	13: "unknown error",
-	15: "element is not selectable",
-	17: "javascript error",
-	19: "xpath lookup error",
-	21: "timeout",
-	23: "no such window",
-	24: "invalid cookie domain",
-	25: "unable to set cookie",
-	26: "unexpected alert open",
-	27: "no alert open",
-	28: "script timeout",
-	29: "invalid element coordinates",
-	32: "invalid selector",
+var remoteErrors = map[int]error{
+	6:  ErrInvalidSessionID,
+	7:  ErrNoSuchElement,
+	8:  ErrNoSuchFrame,
+	9:  ErrUnknownCommand,
+	10: ErrStaleElementReference,
+	11: ErrElementNotVisible,
+	12: ErrInvalidElementState,
+	13: ErrUnknownError,
+	15: ErrElementNotSelectable,
+	17: ErrJavascriptError,
+	19: ErrXpathLookup,
+	21: ErrTimeout,
+	23: ErrNoSuchWindow,
+	24: ErrInvalidCookieDomain,
+	25: ErrUnableToSetCookie,
+	26: ErrUnexpectedAlertOpen,
+	27: ErrNoAlertPresent,
+	28: ErrScriptTimeout,
+	29: ErrInvalidElementCoordinates,
+	32: ErrInvalidSelector,
+}
+
+var remoteStringErrors = map[string]error{
+	ErrInvalidSessionID.Error():          ErrInvalidSessionID,
+	ErrNoSuchElement.Error():             ErrNoSuchElement,
+	ErrNoSuchFrame.Error():               ErrNoSuchFrame,
+	ErrUnknownCommand.Error():            ErrUnknownCommand,
+	ErrStaleElementReference.Error():     ErrStaleElementReference,
+	ErrElementNotVisible.Error():         ErrElementNotVisible,
+	ErrInvalidElementState.Error():       ErrInvalidElementState,
+	ErrUnknownError.Error():              ErrUnknownError,
+	ErrElementNotSelectable.Error():      ErrElementNotSelectable,
+	ErrJavascriptError.Error():           ErrJavascriptError,
+	ErrXpathLookup.Error():               ErrXpathLookup,
+	ErrTimeout.Error():                   ErrTimeout,
+	ErrNoSuchWindow.Error():              ErrNoSuchWindow,
+	ErrInvalidCookieDomain.Error():       ErrInvalidCookieDomain,
+	ErrUnableToSetCookie.Error():         ErrUnableToSetCookie,
+	ErrUnexpectedAlertOpen.Error():       ErrUnexpectedAlertOpen,
+	ErrNoAlertPresent.Error():            ErrNoAlertPresent,
+	ErrScriptTimeout.Error():             ErrScriptTimeout,
+	ErrInvalidElementCoordinates.Error(): ErrInvalidElementCoordinates,
+	ErrInvalidSelector.Error():           ErrInvalidSelector,
 }
 
 type remoteWD struct {
@@ -100,7 +147,7 @@ type serverReply struct {
 // specification.
 type Error struct {
 	// Err contains a general error string provided by the server.
-	Err string `json:"error"`
+	Err error `json:"error"`
 	// Message is a detailed, human-readable message specific to the failure.
 	Message string `json:"message"`
 	// Stacktrace may contain the server-side stacktrace where the error occurred.
@@ -119,6 +166,10 @@ type Error struct {
 // Error implements the error interface.
 func (e *Error) Error() string {
 	return fmt.Sprintf("%s: %s", e.Err, e.Message)
+}
+
+func (e *Error) Unwrap() error {
+	return e.Err
 }
 
 // execute performs an HTTP request and inspects the returned data for an error
@@ -140,7 +191,7 @@ func executeCommand(method, url string, data []byte) (json.RawMessage, error) {
 		return nil, err
 	}
 
-	buf, err := ioutil.ReadAll(response.Body)
+	buf, err := io.ReadAll(response.Body)
 	if debugFlag {
 		if err == nil {
 			// Pretty print the JSON response
@@ -171,7 +222,7 @@ func executeCommand(method, url string, data []byte) (json.RawMessage, error) {
 		}
 		return nil, err
 	}
-	if reply.Err != "" {
+	if reply.Err != nil {
 		return nil, &reply.Error
 	}
 
@@ -179,7 +230,7 @@ func executeCommand(method, url string, data []byte) (json.RawMessage, error) {
 	// embedded in the 'value' field.
 	if len(reply.Value) > 0 {
 		respErr := new(Error)
-		if err := json.Unmarshal(reply.Value, respErr); err == nil && respErr.Err != "" {
+		if err := json.Unmarshal(reply.Value, respErr); err == nil && respErr.Err != nil {
 			respErr.HTTPCode = response.StatusCode
 			return nil, respErr
 		}
@@ -190,14 +241,14 @@ func executeCommand(method, url string, data []byte) (json.RawMessage, error) {
 	if reply.Status != success {
 		shortMsg, ok := remoteErrors[reply.Status]
 		if !ok {
-			shortMsg = fmt.Sprintf("unknown error - %d", reply.Status)
+			shortMsg = fmt.Errorf("unknown error - %d", reply.Status)
 		}
 
 		longMsg := new(struct {
 			Message string
 		})
 		if err := json.Unmarshal(reply.Value, longMsg); err != nil {
-			return nil, errors.New(shortMsg)
+			return nil, shortMsg
 		}
 		return nil, &Error{
 			Err:        shortMsg,
@@ -694,6 +745,18 @@ func (wd *remoteWD) DecodeElement(data []byte) (WebElement, error) {
 	if err := json.Unmarshal(data, &reply); err != nil {
 		return nil, err
 	}
+	if v, ok := reply.Value["error"]; ok {
+		if err, ok := remoteStringErrors[v]; ok {
+			return nil, &Error{
+				Err:        err,
+				Message:    reply.Value["message"],
+				Stacktrace: "",
+				HTTPCode:   0,
+				LegacyCode: 0,
+			}
+		}
+		return nil, fmt.Errorf("invalid element returned: %+v", reply)
+	}
 
 	id := elementIDFromValue(reply.Value)
 	if id == "" {
@@ -735,6 +798,19 @@ func (wd *remoteWD) DecodeElements(data []byte) ([]WebElement, error) {
 
 	elems := make([]WebElement, len(reply.Value))
 	for i, elem := range reply.Value {
+		if v, ok := elem["error"]; ok {
+			if err, ok := remoteStringErrors[v]; ok {
+				return nil, &Error{
+					Err:        err,
+					Message:    elem["message"],
+					Stacktrace: "",
+					HTTPCode:   0,
+					LegacyCode: 0,
+				}
+			}
+			return nil, fmt.Errorf("invalid element returned: %+v", reply)
+		}
+
 		id := elementIDFromValue(elem)
 		if id == "" {
 			return nil, fmt.Errorf("invalid element returned: %+v", reply)
